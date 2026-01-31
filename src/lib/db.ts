@@ -52,7 +52,11 @@ export function getDb(): Database.Database {
       interval_minutes INTEGER NOT NULL,
       grace_minutes INTEGER NOT NULL DEFAULT 15,
       last_ping TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      paused INTEGER NOT NULL DEFAULT 0,
+      paused_at TEXT,
+      paused_until TEXT,
+      pause_reason TEXT
     );
 
     CREATE TABLE IF NOT EXISTS pings (
@@ -77,13 +81,15 @@ export function getDb(): Database.Database {
 export function prepareStatements(db: Database.Database) {
   return {
     getAllMonitors: db.prepare(`
-      SELECT id, name, schedule, interval_minutes, grace_minutes, last_ping, created_at
+      SELECT id, name, schedule, interval_minutes, grace_minutes, last_ping, created_at,
+             paused, paused_at, paused_until, pause_reason
       FROM monitors
       ORDER BY created_at DESC
     `),
 
     getMonitor: db.prepare(`
-      SELECT id, name, schedule, interval_minutes, grace_minutes, last_ping, created_at
+      SELECT id, name, schedule, interval_minutes, grace_minutes, last_ping, created_at,
+             paused, paused_at, paused_until, pause_reason
       FROM monitors
       WHERE id = ?
     `),
@@ -97,14 +103,18 @@ export function prepareStatements(db: Database.Database) {
     `),
 
     insertMonitor: db.prepare(`
-      INSERT INTO monitors (id, name, schedule, interval_minutes, grace_minutes, last_ping, created_at)
-      VALUES (@id, @name, @schedule, @intervalMinutes, @graceMinutes, @lastPing, @createdAt)
+      INSERT INTO monitors (id, name, schedule, interval_minutes, grace_minutes, last_ping, created_at,
+                           paused, paused_at, paused_until, pause_reason)
+      VALUES (@id, @name, @schedule, @intervalMinutes, @graceMinutes, @lastPing, @createdAt,
+              @paused, @pausedAt, @pausedUntil, @pauseReason)
     `),
 
     updateMonitor: db.prepare(`
       UPDATE monitors
       SET name = @name, schedule = @schedule, interval_minutes = @intervalMinutes,
-          grace_minutes = @graceMinutes, last_ping = @lastPing
+          grace_minutes = @graceMinutes, last_ping = @lastPing,
+          paused = @paused, paused_at = @pausedAt, paused_until = @pausedUntil,
+          pause_reason = @pauseReason
       WHERE id = @id
     `),
 
@@ -117,6 +127,24 @@ export function prepareStatements(db: Database.Database) {
 
     updateMonitorLastPing: db.prepare(`
       UPDATE monitors SET last_ping = ? WHERE id = ?
+    `),
+
+    pauseMonitor: db.prepare(`
+      UPDATE monitors
+      SET paused = 1, paused_at = @pausedAt, paused_until = @pausedUntil, pause_reason = @pauseReason
+      WHERE id = @id
+    `),
+
+    resumeMonitor: db.prepare(`
+      UPDATE monitors
+      SET paused = 0, paused_at = NULL, paused_until = NULL, pause_reason = NULL
+      WHERE id = ?
+    `),
+
+    getPausedMonitorsToResume: db.prepare(`
+      SELECT id
+      FROM monitors
+      WHERE paused = 1 AND paused_until IS NOT NULL AND paused_until <= ?
     `),
 
     countMonitors: db.prepare(`SELECT COUNT(*) as count FROM monitors`),
