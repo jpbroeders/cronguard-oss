@@ -322,10 +322,28 @@ export default function Dashboard() {
     }
   }
 
-  function copyToClipboard(text: string, id: string) {
-    navigator.clipboard.writeText(text)
-    setCopying(id)
-    setTimeout(() => setCopying(null), 2000)
+  async function copyToClipboard(text: string, id: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopying(id)
+      setTimeout(() => setCopying(null), 2000)
+    } catch {
+      // Fallback for older browsers or when clipboard API fails
+      const textArea = document.createElement('textarea')
+      textArea.value = text
+      textArea.style.position = 'fixed'
+      textArea.style.left = '-9999px'
+      document.body.appendChild(textArea)
+      textArea.select()
+      try {
+        document.execCommand('copy')
+        setCopying(id)
+        setTimeout(() => setCopying(null), 2000)
+      } catch {
+        showToast('error', 'Failed to copy to clipboard')
+      }
+      document.body.removeChild(textArea)
+    }
   }
 
   function formatRelativeTime(dateStr: string | null) {
