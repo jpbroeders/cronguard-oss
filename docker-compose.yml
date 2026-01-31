@@ -1,0 +1,15 @@
+services:
+  cronguard:
+    image: freelyit/cronguard-oss:latest
+    container_name: cronguard
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - cronguard-data:/app/data
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=${PORT:-3000}
+
+volumes:
+  cronguard-data:

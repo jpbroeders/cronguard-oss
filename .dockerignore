@@ -1,0 +1,24 @@
+# Dependencies
+node_modules
+
+# Build output
+.next
+out
+
+# Data
+data
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# Misc
+*.md
+*.log
+.env*
+.DS_Store
+Thumbs.db
