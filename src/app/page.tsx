@@ -9,6 +9,7 @@ interface Stats {
   healthy: number
   late: number
   down: number
+  paused: number
   totalPings: number
 }
 
@@ -279,6 +280,48 @@ export default function Dashboard() {
     }
   }
 
+  async function handlePauseMonitor(id: string, reason?: string, until?: string) {
+    try {
+      const res = await fetch('/api/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, reason, until })
+      })
+
+      if (res.ok) {
+        showToast('success', 'Monitor paused')
+        fetchData()
+      } else {
+        const data = await res.json()
+        showToast('error', data.error || 'Failed to pause monitor')
+      }
+    } catch (err) {
+      console.error('Failed to pause monitor:', err)
+      showToast('error', 'Failed to pause monitor')
+    }
+  }
+
+  async function handleResumeMonitor(id: string) {
+    try {
+      const res = await fetch('/api/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      })
+
+      if (res.ok) {
+        showToast('success', 'Monitor resumed')
+        fetchData()
+      } else {
+        const data = await res.json()
+        showToast('error', data.error || 'Failed to resume monitor')
+      }
+    } catch (err) {
+      console.error('Failed to resume monitor:', err)
+      showToast('error', 'Failed to resume monitor')
+    }
+  }
+
   function copyToClipboard(text: string, id: string) {
     navigator.clipboard.writeText(text)
     setCopying(id)
@@ -366,6 +409,14 @@ export default function Dashboard() {
             </svg>
           </div>
         )
+      case 'paused':
+        return (
+          <div className="w-6 h-6 rounded-full bg-gray-500/20 flex items-center justify-center">
+            <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+            </svg>
+          </div>
+        )
       default:
         return (
           <div className="w-6 h-6 rounded-full bg-gray-500/20 flex items-center justify-center">
@@ -380,6 +431,7 @@ export default function Dashboard() {
       case 'healthy': return 'text-emerald-500'
       case 'late': return 'text-amber-500'
       case 'down': return 'text-red-500'
+      case 'paused': return 'text-gray-500'
       default: return 'text-gray-400'
     }
   }
@@ -432,7 +484,7 @@ export default function Dashboard() {
       <main className="max-w-6xl mx-auto px-6 py-8">
         {/* Stats Grid */}
         {stats && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
             <div className="stat-card total p-5 border border-[var(--card-border)] animate-fade-in animate-delay-1">
               <div className="flex items-center justify-between">
                 <div>
@@ -484,6 +536,20 @@ export default function Dashboard() {
                 <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
                   <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <div className="stat-card paused p-5 border border-[var(--card-border)] animate-fade-in animate-delay-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[var(--muted)] text-sm font-medium mb-1">Paused</p>
+                  <p className="text-3xl font-bold tracking-tight text-gray-500">{stats.paused}</p>
+                </div>
+                <div className="w-12 h-12 rounded-full bg-gray-500/10 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
                   </svg>
                 </div>
               </div>
@@ -557,6 +623,11 @@ export default function Dashboard() {
                         <p className="text-sm text-[var(--muted)] mono">
                           {monitor.schedule} · {monitor.graceMinutes}m grace
                         </p>
+                        {monitor.paused && monitor.pauseReason && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            Paused: {monitor.pauseReason}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
@@ -568,6 +639,27 @@ export default function Dashboard() {
                           {formatRelativeTime(monitor.lastPing)}
                         </p>
                       </div>
+                      {monitor.paused ? (
+                        <button
+                          onClick={() => handleResumeMonitor(monitor.id)}
+                          className="p-2 text-[var(--muted)] hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors"
+                          title="Resume monitor"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                          </svg>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handlePauseMonitor(monitor.id)}
+                          className="p-2 text-[var(--muted)] hover:text-gray-500 hover:bg-gray-500/10 rounded-lg transition-colors"
+                          title="Pause monitor"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                          </svg>
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditingMonitor(monitor)}
                         className="p-2 text-[var(--muted)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 rounded-lg transition-colors"

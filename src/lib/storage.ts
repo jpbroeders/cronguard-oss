@@ -21,6 +21,10 @@ interface MonitorRow {
   grace_minutes: number
   last_ping: string | null
   created_at: string
+  paused: number
+  paused_at: string | null
+  paused_until: string | null
+  pause_reason: string | null
 }
 
 interface PingRow {
@@ -43,7 +47,11 @@ function rowToMonitor(row: MonitorRow, pings: Ping[]): Monitor {
     lastPing: row.last_ping,
     nextExpected: null,
     pings,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    paused: row.paused === 1,
+    pausedAt: row.paused_at,
+    pausedUntil: row.paused_until,
+    pauseReason: row.pause_reason
   }
   monitor.status = getMonitorStatus(monitor)
   return monitor
@@ -92,13 +100,18 @@ export function createMonitor(name: string, schedule: string, graceMinutes: numb
     intervalMinutes,
     graceMinutes,
     lastPing: null,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    paused: 0,
+    pausedAt: null,
+    pausedUntil: null,
+    pauseReason: null
   }
 
   s.insertMonitor.run(monitorData)
 
   return {
     ...monitorData,
+    paused: false,
     status: 'down',
     nextExpected: null,
     pings: []
@@ -122,7 +135,11 @@ export function updateMonitor(id: string, updates: Partial<Monitor>): Monitor | 
     schedule,
     intervalMinutes,
     graceMinutes: updates.graceMinutes ?? existing.graceMinutes,
-    lastPing: updates.lastPing ?? existing.lastPing
+    lastPing: updates.lastPing ?? existing.lastPing,
+    paused: (updates.paused ?? existing.paused) ? 1 : 0,
+    pausedAt: updates.pausedAt ?? existing.pausedAt,
+    pausedUntil: updates.pausedUntil ?? existing.pausedUntil,
+    pauseReason: updates.pauseReason ?? existing.pauseReason
   }
 
   s.updateMonitor.run(updateData)
@@ -170,6 +187,46 @@ export function recordPing(id: string, success: boolean = true, duration?: numbe
   return ping
 }
 
+export function pauseMonitor(id: string, reason?: string, until?: string): Monitor | null {
+  const existing = getMonitor(id)
+  if (!existing) return null
+
+  const s = getStmts()
+
+  s.pauseMonitor.run({
+    id,
+    pausedAt: new Date().toISOString(),
+    pausedUntil: until ?? null,
+    pauseReason: reason ?? null
+  })
+
+  return getMonitor(id)
+}
+
+export function resumeMonitor(id: string): Monitor | null {
+  const existing = getMonitor(id)
+  if (!existing) return null
+
+  const s = getStmts()
+  s.resumeMonitor.run(id)
+
+  return getMonitor(id)
+}
+
+export function checkAndResumeMonitors(): string[] {
+  const s = getStmts()
+  const now = new Date().toISOString()
+  const toResume = s.getPausedMonitorsToResume.all(now) as Array<{ id: string }>
+
+  const resumed: string[] = []
+  for (const { id } of toResume) {
+    s.resumeMonitor.run(id)
+    resumed.push(id)
+  }
+
+  return resumed
+}
+
 export function getStats() {
   const s = getStmts()
   const all = getAllMonitors()
@@ -181,6 +238,7 @@ export function getStats() {
     healthy: all.filter(m => m.status === 'healthy').length,
     late: all.filter(m => m.status === 'late').length,
     down: all.filter(m => m.status === 'down').length,
+    paused: all.filter(m => m.status === 'paused').length,
     totalPings: pingCount.count
   }
 }

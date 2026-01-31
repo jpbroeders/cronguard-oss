@@ -4,11 +4,15 @@ export interface Monitor {
   schedule: string // cron expression or human readable
   intervalMinutes?: number // parsed interval in minutes
   graceMinutes: number // how long to wait before alerting
-  status: 'healthy' | 'late' | 'down'
+  status: 'healthy' | 'late' | 'down' | 'paused'
   lastPing: string | null
   nextExpected: string | null
   pings: Ping[]
   createdAt: string
+  paused: boolean
+  pausedAt: string | null
+  pausedUntil: string | null
+  pauseReason: string | null
 }
 
 export interface Ping {
@@ -62,30 +66,44 @@ export function parseScheduleInterval(schedule: string): number {
 }
 
 export function getMonitorStatus(monitor: Monitor): Monitor['status'] {
+  // Check if monitor is paused
+  if (monitor.paused) {
+    // Check if auto-resume time has passed
+    if (monitor.pausedUntil) {
+      const resumeTime = new Date(monitor.pausedUntil).getTime()
+      if (Date.now() >= resumeTime) {
+        // Should be resumed, but return paused status
+        // The background job will handle the actual resume
+        return 'paused'
+      }
+    }
+    return 'paused'
+  }
+
   if (!monitor.lastPing) return 'down'
-  
+
   const lastPingTime = new Date(monitor.lastPing).getTime()
   const now = Date.now()
   const graceMs = monitor.graceMinutes * 60 * 1000
-  
+
   // Get interval from stored value or parse from schedule
   const intervalMinutes = monitor.intervalMinutes || parseScheduleInterval(monitor.schedule)
   const intervalMs = intervalMinutes * 60 * 1000
-  
+
   // Expected next ping = last ping + interval
   const expectedNextPing = lastPingTime + intervalMs
-  
+
   // Late if: now > expected (but within grace)
   // Down if: now > expected + grace
   const timeSinceExpected = now - expectedNextPing
-  
+
   if (timeSinceExpected > graceMs) {
     return 'down'
   }
-  
+
   if (timeSinceExpected > 0) {
     return 'late'
   }
-  
+
   return 'healthy'
 }
