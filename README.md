@@ -14,6 +14,7 @@ A lightweight, self-hosted cron job monitoring application. CronGuard helps you 
 - **Simple HTTP Pings** - Just add a curl/wget call to your cron jobs
 - **Real-time Status** - See which jobs are healthy, late, or down
 - **Grace Periods** - Configurable tolerance before marking jobs as failed
+- **Pause & Maintenance Mode** - Temporarily disable monitoring during maintenance windows
 - **Ping History** - Visual timeline of recent pings per monitor
 - **Multi-language Support** - Code examples for 11+ programming languages
 - **Self-hosted** - Your data stays on your infrastructure
@@ -303,6 +304,7 @@ curl https://your-domain/api/monitors?stats=true
   "healthy": 3,
   "late": 1,
   "down": 1,
+  "paused": 0,
   "totalPings": 1234
 }
 ```
@@ -357,6 +359,40 @@ Delete a monitor.
 curl -X DELETE https://your-domain/api/monitors?id=YOUR_MONITOR_ID
 ```
 
+### Pause & Resume Endpoints
+
+#### POST `/api/pause`
+
+Pause a monitor to temporarily disable alerting (e.g., during maintenance).
+
+```bash
+curl -X POST https://your-domain/api/pause \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "YOUR_MONITOR_ID",
+    "reason": "Scheduled maintenance",
+    "until": "2024-01-15T10:00:00Z"
+  }'
+```
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string (UUID) | Yes | Monitor ID |
+| `reason` | string | No | Reason for pausing |
+| `until` | string (ISO 8601) | No | Auto-resume time (omit for indefinite pause) |
+
+#### POST `/api/resume`
+
+Resume a paused monitor.
+
+```bash
+curl -X POST https://your-domain/api/resume \
+  -H "Content-Type: application/json" \
+  -d '{"id": "YOUR_MONITOR_ID"}'
+```
+
 ## Rate Limiting
 
 The ping endpoints are rate-limited to **5 requests per minute per monitor** to prevent abuse. If you exceed this limit, you'll receive a `429 Too Many Requests` response with a `Retry-After` header.
@@ -370,6 +406,7 @@ CronGuard calculates monitor status dynamically based on the last ping:
 | **Healthy** | Last ping received within expected interval |
 | **Late** | Ping overdue but within grace period |
 | **Down** | Ping overdue beyond grace period |
+| **Paused** | Monitoring temporarily disabled (no alerts) |
 
 ## Data Persistence
 
