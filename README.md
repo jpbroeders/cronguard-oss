@@ -2,7 +2,7 @@
 
 [![Docker Hub](https://img.shields.io/docker/v/freelyit/cronguard-oss?label=Docker%20Hub&logo=docker)](https://hub.docker.com/r/freelyit/cronguard-oss)
 [![Docker Pulls](https://img.shields.io/docker/pulls/freelyit/cronguard-oss?logo=docker)](https://hub.docker.com/r/freelyit/cronguard-oss)
-[![License](https://img.shields.io/github/license/jpbroeders/cronguard-oss)](LICENSE)
+[![License](https://img.shields.io/github/license/FreelyIT/cronguard-oss)](LICENSE)
 
 A lightweight, self-hosted cron job monitoring application. CronGuard helps you monitor your scheduled tasks by receiving pings and alerting when jobs fail or run late.
 
@@ -27,7 +27,7 @@ A lightweight, self-hosted cron job monitoring application. CronGuard helps you 
 
 ```bash
 # Download docker-compose.yml
-curl -O https://raw.githubusercontent.com/jpbroeders/cronguard-oss/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/FreelyIT/cronguard-oss/main/docker-compose.yml
 
 # Start CronGuard
 docker-compose up -d
@@ -438,7 +438,7 @@ CronGuard stores all data in a SQLite database at `/app/data/cronguard.db`. To p
 
 ```bash
 # Clone the repository
-git clone https://github.com/jpbroeders/cronguard-oss.git
+git clone https://github.com/FreelyIT/cronguard-oss.git
 cd cronguard-oss
 
 # Install dependencies
@@ -477,9 +477,9 @@ This project is open source and available under the [MIT License](LICENSE).
 
 ## Support
 
-- **GitHub Issues**: [Report a bug or request a feature](https://github.com/jpbroeders/cronguard-oss/issues)
+- **GitHub Issues**: [Report a bug or request a feature](https://github.com/FreelyIT/cronguard-oss/issues)
 - **Docker Hub**: [freelyit/cronguard-oss](https://hub.docker.com/r/freelyit/cronguard-oss)
 
 ---
 
-Made with care by [FreelyIT](https://github.com/jpbroeders)
+Made with care by [FreelyIT](https://www.freelyit.nl/)
