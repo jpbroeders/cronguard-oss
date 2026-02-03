@@ -9,6 +9,19 @@ A lightweight, self-hosted cron job monitoring application. CronGuard helps you 
 <!-- SCREENSHOT: Dashboard Overview -->
 ![CronGuard Dashboard](screenshots/dashboard.png)
 
+## ⚠️ Security Notice
+
+**CronGuard OSS is designed for internal/private network deployments.** The API endpoints do not include built-in authentication, which means anyone with network access can view, create, modify, or delete monitors.
+
+**Do NOT expose CronGuard OSS directly to the public internet.**
+
+If you need external access, consider:
+- Placing it behind a reverse proxy (nginx, Traefik, Caddy) with authentication
+- Using a VPN to access your internal network
+- Restricting access via firewall rules or IP whitelisting
+
+For a fully managed solution with built-in authentication, team features, and email/Slack notifications, check out [cronguard.app](https://www.cronguard.app).
+
 ## Features
 
 - **Simple HTTP Pings** - Just add a curl/wget call to your cron jobs
@@ -24,7 +37,6 @@ A lightweight, self-hosted cron job monitoring application. CronGuard helps you 
 ## Quick Start
 
 ### Using Docker Compose (Recommended)
-
 ```bash
 # Download docker-compose.yml
 curl -O https://raw.githubusercontent.com/FreelyIT/cronguard-oss/main/docker-compose.yml
@@ -37,7 +49,6 @@ open http://localhost:3000
 ```
 
 ### Using Docker Run
-
 ```bash
 docker run -d \
   --name cronguard \
@@ -48,7 +59,6 @@ docker run -d \
 ```
 
 ### Custom Port
-
 ```bash
 # Using Docker Compose
 PORT=8080 docker-compose up -d
@@ -83,25 +93,23 @@ docker run -d \
 After creating a monitor, you'll get a unique ping URL. Add a simple HTTP call to your cron job:
 
 #### Basic Usage (Bash/cURL)
-
 ```bash
 # Add to the end of your cron job
-curl -fsS https://your-domain/api/ping/YOUR_MONITOR_ID
+curl -fsS http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID
 
 # Example crontab entry
-0 2 * * * /path/to/backup.sh && curl -fsS https://your-domain/api/ping/abc123
+0 2 * * * /path/to/backup.sh && curl -fsS http://your-internal-host:3000/api/ping/abc123
 ```
 
 #### Report Success or Failure
-
 ```bash
 #!/bin/bash
 # Run your job and report the result
 
 if /path/to/your-script.sh; then
-  curl -fsS https://your-domain/api/ping/YOUR_MONITOR_ID
+  curl -fsS http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID
 else
-  curl -fsS https://your-domain/api/ping/YOUR_MONITOR_ID \
+  curl -fsS http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID \
     -X POST \
     -H "Content-Type: application/json" \
     -d '{"success": false, "message": "Script failed"}'
@@ -109,7 +117,6 @@ fi
 ```
 
 #### With Duration Tracking
-
 ```bash
 #!/bin/bash
 START_TIME=$(date +%s%3N)
@@ -120,7 +127,7 @@ START_TIME=$(date +%s%3N)
 END_TIME=$(date +%s%3N)
 DURATION=$((END_TIME - START_TIME))
 
-curl -fsS https://your-domain/api/ping/YOUR_MONITOR_ID \
+curl -fsS http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID \
   -X POST \
   -H "Content-Type: application/json" \
   -d "{\"duration\": $DURATION}"
@@ -132,7 +139,6 @@ CronGuard provides built-in code examples for multiple languages. Here are a few
 
 <details>
 <summary><strong>Python</strong></summary>
-
 ```python
 import requests
 
@@ -141,7 +147,7 @@ def main():
     print("Running scheduled task...")
 
     # Ping on success
-    requests.get("https://your-domain/api/ping/YOUR_MONITOR_ID")
+    requests.get("http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID")
 
 if __name__ == "__main__":
     main()
@@ -151,18 +157,17 @@ if __name__ == "__main__":
 
 <details>
 <summary><strong>Node.js</strong></summary>
-
 ```javascript
 // Simple ping
-fetch("https://your-domain/api/ping/YOUR_MONITOR_ID");
+fetch("http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID");
 
 // With error handling
 async function runJob() {
   try {
     await doSomething();
-    await fetch("https://your-domain/api/ping/YOUR_MONITOR_ID");
+    await fetch("http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID");
   } catch (error) {
-    await fetch("https://your-domain/api/ping/YOUR_MONITOR_ID", {
+    await fetch("http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ success: false, message: error.message })
@@ -175,20 +180,18 @@ async function runJob() {
 
 <details>
 <summary><strong>PowerShell</strong></summary>
-
 ```powershell
 # Your job logic here
 & .\backup.ps1
 
 # Ping CronGuard
-Invoke-WebRequest -Uri "https://your-domain/api/ping/YOUR_MONITOR_ID" -Method GET
+Invoke-WebRequest -Uri "http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID" -Method GET
 ```
 
 </details>
 
 <details>
 <summary><strong>Go</strong></summary>
-
 ```go
 package main
 
@@ -199,7 +202,7 @@ func main() {
     runJob()
 
     // Ping CronGuard
-    http.Get("https://your-domain/api/ping/YOUR_MONITOR_ID")
+    http.Get("http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID")
 }
 ```
 
@@ -207,14 +210,13 @@ func main() {
 
 <details>
 <summary><strong>PHP</strong></summary>
-
 ```php
 <?php
 // Your job logic here
 runBackup();
 
 // Ping CronGuard
-file_get_contents("https://your-domain/api/ping/YOUR_MONITOR_ID");
+file_get_contents("http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID");
 ```
 
 </details>
@@ -226,9 +228,8 @@ file_get_contents("https://your-domain/api/ping/YOUR_MONITOR_ID");
 #### GET `/api/ping/{id}`
 
 Simple ping to mark a job as successful.
-
 ```bash
-curl https://your-domain/api/ping/YOUR_MONITOR_ID
+curl http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID
 ```
 
 **Response:**
@@ -239,9 +240,8 @@ OK
 #### POST `/api/ping/{id}`
 
 Detailed ping with optional metadata.
-
 ```bash
-curl -X POST https://your-domain/api/ping/YOUR_MONITOR_ID \
+curl -X POST http://your-internal-host:3000/api/ping/YOUR_MONITOR_ID \
   -H "Content-Type: application/json" \
   -d '{
     "success": true,
@@ -276,25 +276,22 @@ curl -X POST https://your-domain/api/ping/YOUR_MONITOR_ID \
 #### GET `/api/monitors`
 
 List all monitors.
-
 ```bash
-curl https://your-domain/api/monitors
+curl http://your-internal-host:3000/api/monitors
 ```
 
 #### GET `/api/monitors?id={id}`
 
 Get a specific monitor.
-
 ```bash
-curl https://your-domain/api/monitors?id=YOUR_MONITOR_ID
+curl http://your-internal-host:3000/api/monitors?id=YOUR_MONITOR_ID
 ```
 
 #### GET `/api/monitors?stats=true`
 
 Get monitor statistics.
-
 ```bash
-curl https://your-domain/api/monitors?stats=true
+curl http://your-internal-host:3000/api/monitors?stats=true
 ```
 
 **Response:**
@@ -312,9 +309,8 @@ curl https://your-domain/api/monitors?stats=true
 #### POST `/api/monitors`
 
 Create a new monitor.
-
 ```bash
-curl -X POST https://your-domain/api/monitors \
+curl -X POST http://your-internal-host:3000/api/monitors \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Daily Backup",
@@ -340,9 +336,8 @@ curl -X POST https://your-domain/api/monitors \
 #### PATCH `/api/monitors`
 
 Update an existing monitor.
-
 ```bash
-curl -X PATCH https://your-domain/api/monitors \
+curl -X PATCH http://your-internal-host:3000/api/monitors \
   -H "Content-Type: application/json" \
   -d '{
     "id": "YOUR_MONITOR_ID",
@@ -354,9 +349,8 @@ curl -X PATCH https://your-domain/api/monitors \
 #### DELETE `/api/monitors?id={id}`
 
 Delete a monitor.
-
 ```bash
-curl -X DELETE https://your-domain/api/monitors?id=YOUR_MONITOR_ID
+curl -X DELETE http://your-internal-host:3000/api/monitors?id=YOUR_MONITOR_ID
 ```
 
 ### Pause & Resume Endpoints
@@ -364,9 +358,8 @@ curl -X DELETE https://your-domain/api/monitors?id=YOUR_MONITOR_ID
 #### POST `/api/pause`
 
 Pause a monitor to temporarily disable alerting (e.g., during maintenance).
-
 ```bash
-curl -X POST https://your-domain/api/pause \
+curl -X POST http://your-internal-host:3000/api/pause \
   -H "Content-Type: application/json" \
   -d '{
     "id": "YOUR_MONITOR_ID",
@@ -386,9 +379,8 @@ curl -X POST https://your-domain/api/pause \
 #### POST `/api/resume`
 
 Resume a paused monitor.
-
 ```bash
-curl -X POST https://your-domain/api/resume \
+curl -X POST http://your-internal-host:3000/api/resume \
   -H "Content-Type: application/json" \
   -d '{"id": "YOUR_MONITOR_ID"}'
 ```
@@ -411,7 +403,6 @@ CronGuard calculates monitor status dynamically based on the last ping:
 ## Data Persistence
 
 CronGuard stores all data in a SQLite database at `/app/data/cronguard.db`. To persist data across container restarts:
-
 ```bash
 # Using a named volume (recommended)
 -v cronguard-data:/app/data
@@ -435,7 +426,6 @@ CronGuard stores all data in a SQLite database at `/app/data/cronguard.db`. To p
 - npm
 
 ### Local Development
-
 ```bash
 # Clone the repository
 git clone https://github.com/FreelyIT/cronguard-oss.git
@@ -451,7 +441,6 @@ npm run dev
 ```
 
 ### Build from Source
-
 ```bash
 # Build the Docker image locally
 docker build -t cronguard-oss .
@@ -479,6 +468,7 @@ This project is open source and available under the [MIT License](LICENSE).
 
 - **GitHub Issues**: [Report a bug or request a feature](https://github.com/FreelyIT/cronguard-oss/issues)
 - **Docker Hub**: [freelyit/cronguard-oss](https://hub.docker.com/r/freelyit/cronguard-oss)
+- **Managed Version**: [cronguard.app](https://www.cronguard.app) - Hosted solution with authentication and notifications
 
 ---
 
