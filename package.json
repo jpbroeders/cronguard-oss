@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^12.10.0",
     "next": "^16.1.6",
     "react": "^19",
     "react-dom": "^19",
@@ -26,5 +26,10 @@
     "postcss": "^8",
     "tailwindcss": "^4.1.18",
     "typescript": "^5"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "^8.5.10"
+    }
   }
 }

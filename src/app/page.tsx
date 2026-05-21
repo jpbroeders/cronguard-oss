@@ -3,6 +3,18 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Monitor, parseScheduleInterval } from '@/lib/types'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import {
+  AppFrame,
+  StatTile,
+  Tab,
+  IncidentBanner,
+  I,
+  StatusBar,
+  StatusBadge,
+  Heartbeat,
+  type HBKind,
+} from '@/components/cg'
+import { IntegrationPanel, CodeDrawer } from '@/components/IntegrationPanel'
 
 interface Stats {
   total: number
@@ -19,142 +31,73 @@ interface ToastMessage {
   message: string
 }
 
-const LANGUAGES = [
-  { id: 'curl', name: 'cURL' },
-  { id: 'bash', name: 'Bash' },
-  { id: 'python', name: 'Python' },
-  { id: 'node', name: 'Node.js' },
-  { id: 'go', name: 'Go' },
-  { id: 'php', name: 'PHP' },
-  { id: 'ruby', name: 'Ruby' },
-  { id: 'java', name: 'Java' },
-  { id: 'csharp', name: 'C#' },
-  { id: 'rust', name: 'Rust' },
-  { id: 'powershell', name: 'PowerShell' },
-]
+const SCHEDULE_PRESETS = [
+  'Every 5 minutes',
+  'Every 15 minutes',
+  'Every hour',
+  'Daily',
+  'Weekly',
+] as const
 
-function getCodeExample(language: string, baseUrl: string): string {
-  const url = `${baseUrl}/api/ping/YOUR_MONITOR_ID`
+function formatRelativeTime(dateStr: string | null) {
+  if (!dateStr) return 'Never'
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const minutes = Math.floor(diff / 60000)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
 
-  const examples: Record<string, string> = {
-    curl: `# Simple ping
-curl -fsS "${url}"
+  if (days > 0) return `${days}d ago`
+  if (hours > 0) return `${hours}h ago`
+  if (minutes > 0) return `${minutes}m ago`
+  return 'Just now'
+}
 
-# With timeout
-curl -fsS --max-time 10 "${url}"
-
-# Report failure on error
-./my-script.sh && curl -fsS "${url}" \\
-  || curl -fsS "${url}" -X POST -d '{"success":false}'`,
-
-    bash: `#!/bin/bash
-set -e
-
-# Your job logic here
-echo "Running backup..."
-
-# Ping CronGuard on success
-curl -fsS "${url}"`,
-
-    python: `import requests
-
-def main():
-    # Your job logic here
-    print("Running scheduled task...")
-
-    # Ping on success
-    requests.get("${url}")
-
-if __name__ == "__main__":
-    main()`,
-
-    node: `// Simple ping
-fetch("${url}");
-
-// With error handling
-async function runJob() {
-  try {
-    await doSomething();
-    await fetch("${url}");
-  } catch (error) {
-    await fetch("${url}", {
-      method: "POST",
-      body: JSON.stringify({ success: false })
-    });
+// Build a 30-bar heartbeat: real pings (newest → rightmost) plus synthesized
+// `miss` bars for gaps larger than (interval + grace). Bars at the left are
+// padded with faint `idle` slots so all rows have equal width.
+function buildHeartbeat(monitor: Monitor): HBKind[] {
+  const target = 30
+  if (monitor.paused && monitor.pings.length === 0) {
+    return Array(target).fill('idle') as HBKind[]
   }
-}`,
 
-    go: `package main
+  const intervalMinutes = monitor.intervalMinutes || parseScheduleInterval(monitor.schedule)
+  const intervalMs = intervalMinutes * 60 * 1000
+  const graceMs = monitor.graceMinutes * 60 * 1000
 
-import "net/http"
+  // pings are newest-first; reverse so oldest-first for iteration.
+  const oldest = [...monitor.pings].reverse()
+  const bars: HBKind[] = []
 
-func main() {
-    // Your job logic here
-    runJob()
+  for (let i = 0; i < oldest.length; i++) {
+    bars.push(oldest[i].status === 'success' ? 'ok' : 'miss')
 
-    // Ping CronGuard
-    http.Get("${url}")
-}`,
-
-    php: `<?php
-// Your job logic here
-runBackup();
-
-// Ping CronGuard
-file_get_contents("${url}");`,
-
-    ruby: `require 'net/http'
-
-# Your job logic here
-run_backup
-
-# Ping CronGuard
-Net::HTTP.get(URI("${url}"))`,
-
-    java: `import java.net.http.*;
-import java.net.URI;
-
-public class CronJob {
-    public static void main(String[] args) {
-        // Your job logic here
-        runJob();
-
-        // Ping CronGuard
-        HttpClient.newHttpClient()
-            .send(HttpRequest.newBuilder()
-                .uri(URI.create("${url}"))
-                .GET().build(),
-            HttpResponse.BodyHandlers.ofString());
+    if (i < oldest.length - 1) {
+      const next = new Date(oldest[i + 1].timestamp).getTime()
+      const here = new Date(oldest[i].timestamp).getTime()
+      const gap = next - here
+      if (gap > intervalMs + graceMs) {
+        const missedCount = Math.min(Math.ceil(gap / intervalMs) - 1, target)
+        for (let j = 0; j < missedCount; j++) bars.push('miss')
+      }
     }
-}`,
-
-    csharp: `using System.Net.Http;
-
-// Your job logic here
-await RunJob();
-
-// Ping CronGuard
-await new HttpClient().GetAsync("${url}");`,
-
-    rust: `use reqwest;
-
-#[tokio::main]
-async fn main() {
-    // Your job logic here
-    run_job().await;
-
-    // Ping CronGuard
-    reqwest::get("${url}").await.unwrap();
-}`,
-
-    powershell: `# Your job logic here
-& .\\backup.ps1
-
-# Ping CronGuard
-Invoke-WebRequest -Uri "${url}" -Method GET`,
   }
 
-  return examples[language] || examples.curl
+  // Tail: monitor is currently overdue → append late or miss bars.
+  if (monitor.lastPing) {
+    const sinceLast = Date.now() - new Date(monitor.lastPing).getTime()
+    if (sinceLast > intervalMs + graceMs) {
+      const overdue = Math.min(Math.ceil((sinceLast - graceMs) / intervalMs), target)
+      for (let i = 0; i < overdue; i++) bars.push('miss')
+    } else if (sinceLast > intervalMs) {
+      bars.push('late')
+    }
+  }
+
+  if (bars.length < target) {
+    return [...(Array(target - bars.length).fill('idle') as HBKind[]), ...bars]
+  }
+  return bars.slice(-target)
 }
 
 export default function Dashboard() {
@@ -164,9 +107,9 @@ export default function Dashboard() {
   const [showModal, setShowModal] = useState(false)
   const [newMonitor, setNewMonitor] = useState({ name: '', schedule: '', graceMinutes: 15 })
   const [editingMonitor, setEditingMonitor] = useState<Monitor | null>(null)
-  const [copying, setCopying] = useState<string | null>(null)
-  const [activeLanguage, setActiveLanguage] = useState('curl')
   const [baseUrl, setBaseUrl] = useState('')
+  const [codeDrawerMonitor, setCodeDrawerMonitor] = useState<{ id: string; name: string } | null>(null)
+  const [createdMonitor, setCreatedMonitor] = useState<{ id: string; name: string } | null>(null)
   const [statusFilter, setStatusFilter] = useState<'all' | 'late' | 'down'>('all')
   const [refreshInterval, setRefreshInterval] = useState(30)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
@@ -219,10 +162,10 @@ export default function Dashboard() {
       })
 
       if (res.ok) {
-        setShowModal(false)
-        setNewMonitor({ name: '', schedule: '', graceMinutes: 15 })
+        const created = await res.json()
         showToast('success', 'Monitor created successfully')
         fetchData()
+        setCreatedMonitor({ id: created.id, name: created.name ?? newMonitor.name })
       } else {
         const data = await res.json()
         showToast('error', data.error || 'Failed to create monitor')
@@ -280,12 +223,12 @@ export default function Dashboard() {
     }
   }
 
-  async function handlePauseMonitor(id: string, reason?: string, until?: string) {
+  async function handlePauseMonitor(id: string) {
     try {
       const res = await fetch('/api/pause', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, reason, until })
+        body: JSON.stringify({ id })
       })
 
       if (res.ok) {
@@ -322,649 +265,794 @@ export default function Dashboard() {
     }
   }
 
-  async function copyToClipboard(text: string, id: string) {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopying(id)
-      setTimeout(() => setCopying(null), 2000)
-    } catch {
-      // Fallback for older browsers or when clipboard API fails
-      const textArea = document.createElement('textarea')
-      textArea.value = text
-      textArea.style.position = 'fixed'
-      textArea.style.left = '-9999px'
-      document.body.appendChild(textArea)
-      textArea.select()
-      try {
-        document.execCommand('copy')
-        setCopying(id)
-        setTimeout(() => setCopying(null), 2000)
-      } catch {
-        showToast('error', 'Failed to copy to clipboard')
-      }
-      document.body.removeChild(textArea)
-    }
-  }
-
-  function formatRelativeTime(dateStr: string | null) {
-    if (!dateStr) return 'Never'
-    const diff = Date.now() - new Date(dateStr).getTime()
-    const minutes = Math.floor(diff / 60000)
-    const hours = Math.floor(minutes / 60)
-    const days = Math.floor(hours / 24)
-
-    if (days > 0) return `${days}d ago`
-    if (hours > 0) return `${hours}h ago`
-    if (minutes > 0) return `${minutes}m ago`
-    return 'Just now'
-  }
-
-  function buildPingDisplay(monitor: Monitor): Array<{ type: 'ping' | 'missed' | 'late'; ping?: typeof monitor.pings[0]; timestamp?: number }> {
-    const intervalMinutes = monitor.intervalMinutes || parseScheduleInterval(monitor.schedule)
-    const intervalMs = intervalMinutes * 60 * 1000
-    const graceMs = monitor.graceMinutes * 60 * 1000
-    const result: Array<{ type: 'ping' | 'missed' | 'late'; ping?: typeof monitor.pings[0]; timestamp?: number }> = []
-
-    if (monitor.lastPing) {
-      const lastPingTime = new Date(monitor.lastPing).getTime()
-      const now = Date.now()
-      const timeSinceLastPing = now - lastPingTime
-
-      if (timeSinceLastPing > intervalMs && timeSinceLastPing <= intervalMs + graceMs) {
-        result.push({ type: 'late', timestamp: now })
-      } else if (timeSinceLastPing > intervalMs + graceMs) {
-        const missedCount = Math.floor((timeSinceLastPing - graceMs) / intervalMs)
-        for (let i = 0; i < missedCount; i++) {
-          result.push({ type: 'missed', timestamp: now - (i * intervalMs) })
-        }
-      }
-    }
-
-    for (let i = 0; i < monitor.pings.length; i++) {
-      const ping = monitor.pings[i]
-      result.push({ type: 'ping', ping })
-
-      if (i < monitor.pings.length - 1) {
-        const currentTime = new Date(ping.timestamp).getTime()
-        const nextTime = new Date(monitor.pings[i + 1].timestamp).getTime()
-        const gap = currentTime - nextTime
-
-        if (gap > intervalMs + graceMs) {
-          const missedCount = Math.ceil(gap / intervalMs) - 1
-          for (let j = 0; j < missedCount; j++) {
-            result.push({ type: 'missed', timestamp: currentTime - ((j + 1) * intervalMs) })
-          }
-        }
-      }
-    }
-
-    return result.slice(0, 75)
-  }
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'healthy':
-        return (
-          <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center">
-            <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-        )
-      case 'late':
-        return (
-          <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center animate-pulse">
-            <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-        )
-      case 'down':
-        return (
-          <div className="w-6 h-6 rounded-full bg-red-500/20 flex items-center justify-center animate-pulse">
-            <svg className="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-          </div>
-        )
-      case 'paused':
-        return (
-          <div className="w-6 h-6 rounded-full bg-gray-500/20 flex items-center justify-center">
-            <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-            </svg>
-          </div>
-        )
-      default:
-        return (
-          <div className="w-6 h-6 rounded-full bg-gray-500/20 flex items-center justify-center">
-            <div className="w-2 h-2 rounded-full bg-gray-400" />
-          </div>
-        )
-    }
-  }
-
-  const getStatusTextClass = (status: string) => {
-    switch (status) {
-      case 'healthy': return 'text-emerald-500'
-      case 'late': return 'text-amber-500'
-      case 'down': return 'text-red-500'
-      case 'paused': return 'text-gray-500'
-      default: return 'text-gray-400'
-    }
-  }
-
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
-          <span className="text-[var(--muted)] text-sm">Loading monitors...</span>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+          <div style={{
+            width: 32, height: 32,
+            border: '2px solid var(--accent)',
+            borderTopColor: 'transparent',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+          }} />
+          <span style={{ color: 'var(--muted)', fontSize: 13 }}>Loading monitors…</span>
         </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       </div>
     )
   }
 
+  const firstDown = monitors.find(m => m.status === 'down')
+
   return (
-    <div className="min-h-screen grid-bg relative">
-      {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-[var(--card-border)] bg-[var(--background)]/80 backdrop-blur-xl">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/25">
-              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold tracking-tight">CronGuard</h1>
-              <p className="text-xs text-[var(--muted)]">Cron Job Monitoring</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-[var(--muted)]">Refresh:</span>
-              <select
-                value={refreshInterval}
-                onChange={(e) => setRefreshInterval(Number(e.target.value))}
-                className="px-2 py-1.5 bg-[var(--card)] border border-[var(--card-border)] rounded-lg text-sm cursor-pointer"
-              >
-                <option value={30}>30s</option>
-                <option value={60}>1m</option>
-                <option value={300}>5m</option>
-              </select>
-            </div>
-            <ThemeToggle />
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        {/* Stats Grid */}
-        {stats && (
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-            <div className="stat-card total p-5 border border-[var(--card-border)] animate-fade-in animate-delay-1">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[var(--muted)] text-sm font-medium mb-1">Total</p>
-                  <p className="text-3xl font-bold tracking-tight">{stats.total}</p>
-                </div>
-                <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <div className="stat-card healthy p-5 border border-[var(--card-border)] animate-fade-in animate-delay-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[var(--muted)] text-sm font-medium mb-1">Healthy</p>
-                  <p className="text-3xl font-bold tracking-tight text-emerald-500">{stats.healthy}</p>
-                </div>
-                <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <div className="stat-card warning p-5 border border-[var(--card-border)] animate-fade-in animate-delay-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[var(--muted)] text-sm font-medium mb-1">Late</p>
-                  <p className="text-3xl font-bold tracking-tight text-amber-500">{stats.late}</p>
-                </div>
-                <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <div className="stat-card danger p-5 border border-[var(--card-border)] animate-fade-in animate-delay-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[var(--muted)] text-sm font-medium mb-1">Down</p>
-                  <p className="text-3xl font-bold tracking-tight text-red-500">{stats.down}</p>
-                </div>
-                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            <div className="stat-card paused p-5 border border-[var(--card-border)] animate-fade-in animate-delay-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[var(--muted)] text-sm font-medium mb-1">Paused</p>
-                  <p className="text-3xl font-bold tracking-tight text-gray-500">{stats.paused}</p>
-                </div>
-                <div className="w-12 h-12 rounded-full bg-gray-500/10 flex items-center justify-center">
-                  <svg className="w-6 h-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Monitors Section */}
-        <div className="card overflow-hidden animate-fade-in" style={{ animationDelay: '0.5s' }}>
-          <div className="p-5 border-b border-[var(--card-border)] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <div className="flex items-center gap-3">
-              <h2 className="text-lg font-semibold">Monitors</h2>
-              <div className="flex rounded-lg overflow-hidden border border-[var(--card-border)]">
-                {(['all', 'late', 'down'] as const).map((filter) => (
-                  <button
-                    key={filter}
-                    onClick={() => setStatusFilter(filter)}
-                    className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                      statusFilter === filter
-                        ? 'bg-[var(--accent)] text-white'
-                        : 'hover:bg-[var(--card-border)]'
-                    }`}
-                  >
-                    {filter}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <button
-              onClick={() => setShowModal(true)}
-              className="btn btn-primary gap-2"
+    <>
+      <AppFrame
+        activeRoute={statusFilter === 'down' ? 'incidents' : 'monitors'}
+        stats={stats ? { total: stats.total, down: stats.down, late: stats.late, healthy: stats.healthy, paused: stats.paused } : undefined}
+        onNavigate={(route) => {
+          if (route === 'incidents') setStatusFilter('down')
+          else if (route === 'monitors') setStatusFilter('all')
+        }}
+        title="Monitors"
+        subtitle={stats ? `${stats.total} monitor${stats.total === 1 ? '' : 's'} · ${stats.healthy} healthy · ${stats.down} down` : 'Loading…'}
+        headerRight={
+          <>
+            <select
+              value={refreshInterval}
+              onChange={(e) => setRefreshInterval(Number(e.target.value))}
+              aria-label="Auto-refresh interval"
+              style={{
+                height: 28,
+                padding: '0 8px',
+                fontSize: 12,
+                background: 'var(--surface)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--fg)',
+                cursor: 'pointer',
+              }}
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              New Monitor
+              <option value={30}>30s</option>
+              <option value={60}>1m</option>
+              <option value={300}>5m</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowModal(true)}
+              className="cg-btn is-sm is-primary"
+            >
+              <I name="plus" size={13} /> New monitor
             </button>
+            <ThemeToggle />
+          </>
+        }
+      >
+        <div style={{ padding: '20px 24px 32px' }}>
+          {/* Onboarding strip — only for new installs with zero monitors */}
+          {monitors.length === 0 && (
+            <OnboardingStrip onCreateClick={() => setShowModal(true)} />
+          )}
+
+          {/* Incident banner */}
+          {firstDown && stats && (stats.down > 0 || stats.late > 0) && (
+            <IncidentBanner
+              data={{
+                count: stats.down,
+                monitorName: firstDown.name,
+                duration: formatRelativeTime(firstDown.lastPing),
+                detail: `Expected ${firstDown.schedule.toLowerCase()} · grace ${firstDown.graceMinutes}m`,
+              }}
+            />
+          )}
+
+          {/* Stats */}
+          {stats && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 18 }}>
+              <StatTile label="Total monitors" value={stats.total} icon="grid" />
+              <StatTile label="Healthy" value={stats.healthy} status="healthy" />
+              <StatTile label="Late" value={stats.late} status="late" pulse={stats.late > 0} />
+              <StatTile label="Down" value={stats.down} status="down" pulse={stats.down > 0} />
+              <StatTile label="Paused" value={stats.paused} status="paused" />
+            </div>
+          )}
+
+          {/* Monitors Section */}
+          <div className="cg-card" style={{ overflow: 'hidden' }}>
+            <div className="cg-card-h">
+              <div className="row gap-8">
+                <Tab
+                  label="All"
+                  count={stats?.total ?? 0}
+                  active={statusFilter === 'all'}
+                  onClick={() => setStatusFilter('all')}
+                />
+                <Tab
+                  label="Active incidents"
+                  count={(stats?.down ?? 0) + (stats?.late ?? 0)}
+                  accent
+                  active={statusFilter === 'down'}
+                  onClick={() => setStatusFilter('down')}
+                />
+                <Tab
+                  label="Late"
+                  count={stats?.late ?? 0}
+                  active={statusFilter === 'late'}
+                  onClick={() => setStatusFilter('late')}
+                />
+              </div>
+              <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                auto-refresh <span className="mono">{refreshInterval >= 60 ? `${refreshInterval / 60}m` : `${refreshInterval}s`}</span>
+              </span>
+            </div>
+
+            {monitors.length === 0 ? (
+              <div style={{ padding: '64px 32px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+                <div style={{
+                  width: 56, height: 56,
+                  borderRadius: 16,
+                  background: 'var(--accent-soft)',
+                  color: 'var(--accent)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>
+                  <I name="graph" size={28} />
+                </div>
+                <div className="col" style={{ gap: 6, alignItems: 'center' }}>
+                  <div style={{
+                    fontFamily: 'var(--font-display)',
+                    fontSize: 20,
+                    fontWeight: 600,
+                    letterSpacing: '-0.015em',
+                  }}>
+                    No monitors yet
+                  </div>
+                  <div style={{ fontSize: 13.5, color: 'var(--muted)', maxWidth: 360 }}>
+                    Create your first monitor to start tracking your cron jobs. It takes about 30 seconds.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowModal(true)}
+                  className="cg-btn is-primary"
+                  style={{ marginTop: 4 }}
+                >
+                  <I name="plus" size={13} /> Create monitor
+                </button>
+              </div>
+            ) : monitors.filter((m) => statusFilter === 'all' || m.status === statusFilter).length === 0 ? (
+              <div style={{ padding: '48px 32px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: 13.5, color: 'var(--muted)' }}>
+                  No {statusFilter} monitors
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('all')}
+                  className="cg-btn is-sm is-ghost"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Show all monitors
+                </button>
+              </div>
+            ) : (
+              <>
+                <div
+                  className="cg-list-h"
+                  style={{ gridTemplateColumns: '3px 1.4fr 0.9fr 100px 90px 130px' }}
+                >
+                  <span></span>
+                  <span>Monitor</span>
+                  <span>Heartbeat · last 30</span>
+                  <span>Last ping</span>
+                  <span>Status</span>
+                  <span style={{ textAlign: 'right' }}>Actions</span>
+                </div>
+
+                <div className="cg-list">
+                  {monitors
+                    .filter((m) => statusFilter === 'all' || m.status === statusFilter)
+                    .map((monitor) => {
+                      const hb = buildHeartbeat(monitor)
+                      return (
+                        <div
+                          key={monitor.id}
+                          className="cg-list-row"
+                          style={{ gridTemplateColumns: '3px 1.4fr 0.9fr 100px 90px 130px' }}
+                        >
+                          <StatusBar status={monitor.status} />
+
+                          <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                            <span
+                              className="name"
+                              style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {monitor.name}
+                            </span>
+                            <div className="sub">
+                              {monitor.schedule} · {monitor.graceMinutes}m grace
+                              {monitor.paused && monitor.pauseReason ? ` · ${monitor.pauseReason}` : ''}
+                            </div>
+                          </div>
+
+                          <Heartbeat items={hb} height={20} />
+
+                          <div className="when" suppressHydrationWarning>{formatRelativeTime(monitor.lastPing)}</div>
+
+                          <StatusBadge
+                            status={monitor.status}
+                            pulse={monitor.status === 'down' || monitor.status === 'late'}
+                          />
+
+                          <div
+                            className="row gap-4"
+                            style={{ justifyContent: 'flex-end', color: 'var(--muted)' }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {monitor.paused ? (
+                              <button
+                                type="button"
+                                onClick={() => handleResumeMonitor(monitor.id)}
+                                className="cg-btn is-sm is-ghost"
+                                style={{ height: 24, padding: '0 6px' }}
+                                title="Resume monitor"
+                              >
+                                <I name="play" size={12} />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handlePauseMonitor(monitor.id)}
+                                className="cg-btn is-sm is-ghost"
+                                style={{ height: 24, padding: '0 6px' }}
+                                title="Pause monitor"
+                              >
+                                <I name="pause" size={12} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setCodeDrawerMonitor({ id: monitor.id, name: monitor.name })}
+                              className="cg-btn is-sm is-ghost"
+                              style={{ height: 24, padding: '0 6px' }}
+                              title="Get code"
+                              aria-label="Get integration code"
+                            >
+                              <I name="code" size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMonitor(monitor)}
+                              className="cg-btn is-sm is-ghost"
+                              style={{ height: 24, padding: '0 6px' }}
+                              title="Edit"
+                            >
+                              <I name="edit" size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(monitor.id)}
+                              className="cg-btn is-sm is-ghost"
+                              style={{ height: 24, padding: '0 6px', color: 'var(--down)' }}
+                              title="Delete"
+                            >
+                              <I name="trash" size={12} />
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                </div>
+              </>
+            )}
           </div>
 
-          {monitors.length === 0 ? (
-            <div className="p-12 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-[var(--card-border)] flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-[var(--muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-medium mb-2">No monitors yet</h3>
-              <p className="text-[var(--muted)] text-sm mb-4">Create your first monitor to start tracking your cron jobs.</p>
-              <button onClick={() => setShowModal(true)} className="btn btn-primary">
-                Create Monitor
-              </button>
-            </div>
-          ) : monitors.filter((m) => statusFilter === 'all' || m.status === statusFilter).length === 0 ? (
-            <div className="p-12 text-center">
-              <p className="text-[var(--muted)]">No {statusFilter} monitors</p>
-              <button onClick={() => setStatusFilter('all')} className="text-[var(--accent)] text-sm mt-2 hover:underline">
-                Show all monitors
-              </button>
-            </div>
-          ) : (
-            <div className="divide-y divide-[var(--card-border)]">
-              {monitors
-                .filter((monitor) => statusFilter === 'all' || monitor.status === statusFilter)
-                .map((monitor) => (
-                <div key={monitor.id} className="p-5 hover:bg-[var(--card-border)]/30 transition-colors">
-                  <div className="flex items-start justify-between gap-4 mb-3">
-                    <div className="flex items-center gap-3">
-                      {getStatusIcon(monitor.status)}
-                      <div>
-                        <h3 className="font-medium">{monitor.name}</h3>
-                        <p className="text-sm text-[var(--muted)] mono">
-                          {monitor.schedule} · {monitor.graceMinutes}m grace
-                        </p>
-                        {monitor.paused && monitor.pauseReason && (
-                          <p className="text-xs text-gray-500 mt-1">
-                            Paused: {monitor.pauseReason}
-                          </p>
-                        )}
+          {/* Integration guide — empty-state only.
+              Shown when the user has 0 monitors or none have ever pinged. */}
+          {(monitors.length === 0 || monitors.every((m) => m.lastPing === null)) && (
+            <div style={{ marginTop: 20 }}>
+              <IntegrationPanel
+                baseUrl={baseUrl}
+                variant="card"
+                headerSlot={
+                  <div className="cg-card-h">
+                    <div className="col" style={{ gap: 2 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>Integration</div>
+                      <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        Add a simple HTTP call to your cron job
                       </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <div className="text-right">
-                        <p className={`text-sm font-medium capitalize ${getStatusTextClass(monitor.status)}`}>
-                          {monitor.status}
-                        </p>
-                        <p className="text-xs text-[var(--muted)]">
-                          {formatRelativeTime(monitor.lastPing)}
-                        </p>
-                      </div>
-                      {monitor.paused ? (
-                        <button
-                          onClick={() => handleResumeMonitor(monitor.id)}
-                          className="p-2 text-[var(--muted)] hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors"
-                          title="Resume monitor"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
-                          </svg>
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handlePauseMonitor(monitor.id)}
-                          className="p-2 text-[var(--muted)] hover:text-gray-500 hover:bg-gray-500/10 rounded-lg transition-colors"
-                          title="Pause monitor"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-                          </svg>
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setEditingMonitor(monitor)}
-                        className="p-2 text-[var(--muted)] hover:text-[var(--accent)] hover:bg-[var(--accent)]/10 rounded-lg transition-colors"
-                        title="Edit monitor"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={() => handleDelete(monitor.id)}
-                        className="p-2 text-[var(--muted)] hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
-                        title="Delete monitor"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
                     </div>
                   </div>
-
-                  {/* Ping URL */}
-                  <div className="flex items-center gap-2 p-3 bg-[var(--background)] rounded-lg border border-[var(--card-border)]">
-                    <code className="flex-1 text-sm text-[var(--muted)] truncate">
-                      {baseUrl}/api/ping/{monitor.id}
-                    </code>
-                    <button
-                      onClick={() => copyToClipboard(`${baseUrl}/api/ping/${monitor.id}`, monitor.id)}
-                      className="px-3 py-1 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/10 rounded transition-colors"
-                    >
-                      {copying === monitor.id ? '✓ Copied' : 'Copy'}
-                    </button>
-                  </div>
-
-                  {/* Ping History */}
-                  {(monitor.pings.length > 0 || monitor.status === 'down') && (
-                    <div className="mt-3">
-                      <p className="text-xs text-[var(--muted)] mb-2">Recent activity</p>
-                      <div className="flex gap-0.5">
-                        {buildPingDisplay(monitor).map((item, idx) => (
-                          <div
-                            key={idx}
-                            className={`h-6 flex-1 max-w-[12px] rounded-sm transition-all hover:scale-110 ${
-                              item.type === 'missed'
-                                ? 'bg-red-500'
-                                : item.type === 'late'
-                                  ? 'bg-amber-500 animate-pulse'
-                                  : item.ping?.status === 'success'
-                                    ? 'bg-emerald-500'
-                                    : 'bg-red-400'
-                            }`}
-                            title={
-                              item.type === 'missed'
-                                ? `Missed`
-                                : item.type === 'late'
-                                  ? `Late - waiting`
-                                  : `${item.ping?.status} - ${item.ping ? new Date(item.ping.timestamp).toLocaleString() : ''}`
-                            }
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
+                }
+              />
             </div>
           )}
         </div>
-
-        {/* Integration Guide */}
-        <div className="card mt-8 overflow-hidden animate-fade-in" style={{ animationDelay: '0.6s' }}>
-          <div className="p-5 border-b border-[var(--card-border)]">
-            <h2 className="text-lg font-semibold">Integration Guide</h2>
-            <p className="text-sm text-[var(--muted)] mt-1">Add a simple HTTP call to your cron job</p>
-          </div>
-
-          {/* Language Tabs */}
-          <div className="border-b border-[var(--card-border)] overflow-x-auto">
-            <div className="flex">
-              {LANGUAGES.map((lang) => (
-                <button
-                  key={lang.id}
-                  onClick={() => setActiveLanguage(lang.id)}
-                  className={`lang-tab ${activeLanguage === lang.id ? 'active' : ''}`}
-                >
-                  {lang.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Code Block */}
-          <div className="p-5">
-            <div className="code-block relative">
-              <pre>
-                <code>{getCodeExample(activeLanguage, baseUrl || 'https://your-domain')}</code>
-              </pre>
-              <button
-                onClick={() => copyToClipboard(getCodeExample(activeLanguage, baseUrl || 'https://your-domain'), 'code')}
-                className="absolute top-3 right-3 px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white text-xs font-medium rounded transition-colors"
-              >
-                {copying === 'code' ? '✓ Copied' : 'Copy'}
-              </button>
-            </div>
-
-            <div className="mt-4 p-4 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-              <p className="text-sm text-[var(--foreground)]">
-                <span className="font-medium">Tip:</span>{' '}
-                <span className="text-[var(--muted)]">
-                  Replace <code className="mono px-1 py-0.5 bg-[var(--card)] rounded text-[var(--accent)]">YOUR_MONITOR_ID</code> with
-                  your monitor ID from the list above.
-                </span>
-              </p>
-            </div>
-          </div>
-        </div>
-      </main>
+      </AppFrame>
 
       {/* Create Monitor Modal */}
-      {showModal && (
-        <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50 p-4">
+      {showModal && (() => {
+        const closeAndReset = () => {
+          setShowModal(false)
+          setCreatedMonitor(null)
+          setNewMonitor({ name: '', schedule: '', graceMinutes: 15 })
+        }
+        return (
+        <div className="cg-modal-back" onClick={closeAndReset}>
           <div
-            className="card w-full max-w-md p-6 animate-fade-in"
+            className="cg-modal"
             onClick={(e) => e.stopPropagation()}
+            style={{ width: 820, maxWidth: '95%' }}
           >
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-semibold">New Monitor</h3>
+            <div className="cg-card-h">
+              <div style={{ fontSize: 14, fontWeight: 600 }}>
+                {createdMonitor ? 'Add this to your job' : 'New monitor'}
+              </div>
               <button
-                onClick={() => setShowModal(false)}
-                className="p-2 hover:bg-[var(--card-border)] rounded-lg transition-colors"
+                type="button"
+                onClick={closeAndReset}
+                className="cg-btn is-sm is-ghost"
+                style={{ height: 24, padding: '0 6px' }}
+                aria-label="Close"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">Name</label>
-                <input
-                  type="text"
-                  value={newMonitor.name}
-                  onChange={(e) => setNewMonitor({ ...newMonitor, name: e.target.value })}
-                  placeholder="e.g., Daily Backup"
-                  className="w-full px-4 py-2.5 bg-[var(--background)] border border-[var(--card-border)] rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Schedule</label>
-                <input
-                  type="text"
-                  value={newMonitor.schedule}
-                  onChange={(e) => setNewMonitor({ ...newMonitor, schedule: e.target.value })}
-                  placeholder="e.g., Every 5 minutes"
-                  className="w-full px-4 py-2.5 bg-[var(--background)] border border-[var(--card-border)] rounded-lg"
-                />
-                <p className="text-xs text-[var(--muted)] mt-1.5">Use: Every X minutes, Every hour, Daily, Weekly</p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Grace Period</label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={newMonitor.graceMinutes}
-                    onChange={(e) => setNewMonitor({ ...newMonitor, graceMinutes: parseInt(e.target.value) || 15 })}
-                    className="w-full px-4 py-2.5 bg-[var(--background)] border border-[var(--card-border)] rounded-lg pr-16"
-                  />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[var(--muted)] text-sm">min</span>
+            {createdMonitor ? (
+              <>
+                <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+                  <div className="row gap-10" style={{ alignItems: 'center', marginBottom: 12 }}>
+                    <span style={{
+                      width: 28, height: 28,
+                      borderRadius: '50%',
+                      background: 'var(--healthy-soft)',
+                      color: 'var(--healthy)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}>
+                      <I name="check" size={14} />
+                    </span>
+                    <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600 }}>
+                        {createdMonitor.name} is ready
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        Drop this HTTP call into your job — first ping completes setup.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="cg-eyebrow" style={{ marginBottom: 6 }}>Ping URL</div>
+                  <div
+                    className="mono"
+                    style={{
+                      padding: '8px 12px',
+                      background: 'var(--bg)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 12,
+                      color: 'var(--fg-2)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={`${baseUrl || 'https://cronguard.app'}/api/ping/${createdMonitor.id}`}
+                  >
+                    {baseUrl || 'https://cronguard.app'}/api/ping/{createdMonitor.id}
+                  </div>
                 </div>
-                <p className="text-xs text-[var(--muted)] mt-1.5">How long to wait before alerting</p>
-              </div>
-            </div>
+                <IntegrationPanel
+                  baseUrl={baseUrl}
+                  monitorId={createdMonitor.id}
+                  variant="flush"
+                />
+                <div style={{ padding: '12px 20px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', background: 'var(--surface)' }}>
+                  <button type="button" onClick={closeAndReset} className="cg-btn is-sm is-primary">
+                    <I name="check" size={12} /> Done — start monitoring
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                  {/* LEFT — form */}
+                  <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14, borderRight: '1px solid var(--border)' }}>
+                    <div>
+                      <label className="cg-label">Name</label>
+                      <input
+                        type="text"
+                        value={newMonitor.name}
+                        onChange={(e) => setNewMonitor({ ...newMonitor, name: e.target.value })}
+                        placeholder="e.g. Postgres nightly backup"
+                        className="cg-input"
+                        autoFocus
+                      />
+                    </div>
 
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setShowModal(false)}
-                className="flex-1 px-4 py-2.5 border border-[var(--card-border)] rounded-lg font-medium hover:bg-[var(--card-border)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreateMonitor}
-                className="flex-1 btn btn-primary"
-              >
-                Create Monitor
-              </button>
-            </div>
+                    <div>
+                      <label className="cg-label">Schedule</label>
+                      <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                        {SCHEDULE_PRESETS.map((preset) => {
+                          const isActive = newMonitor.schedule === preset
+                          return (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => setNewMonitor({ ...newMonitor, schedule: preset })}
+                              style={{
+                                height: 26,
+                                padding: '0 10px',
+                                borderRadius: 999,
+                                fontSize: 11.5,
+                                fontWeight: 500,
+                                cursor: 'pointer',
+                                background: isActive ? 'var(--accent-soft)' : 'transparent',
+                                color: isActive ? 'var(--accent)' : 'var(--fg-2)',
+                                border: isActive ? '1px solid transparent' : '1px solid var(--border)',
+                              }}
+                            >
+                              {preset}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <input
+                        type="text"
+                        value={newMonitor.schedule}
+                        onChange={(e) => setNewMonitor({ ...newMonitor, schedule: e.target.value })}
+                        placeholder="e.g. Every 5 minutes"
+                        className="cg-input"
+                      />
+                      <p className="cg-hint">Use: Every X minutes, Every hour, Daily, Weekly</p>
+                    </div>
+
+                    <div>
+                      <label className="cg-label">Grace period</label>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type="number"
+                          value={newMonitor.graceMinutes}
+                          onChange={(e) => setNewMonitor({ ...newMonitor, graceMinutes: parseInt(e.target.value) || 15 })}
+                          className="cg-input"
+                          style={{ paddingRight: 48 }}
+                        />
+                        <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: 12 }}>min</span>
+                      </div>
+                      <p className="cg-hint">How long to wait before alerting</p>
+                    </div>
+                  </div>
+
+                  {/* RIGHT — live preview */}
+                  <div style={{ padding: 20, background: 'var(--surface-2)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <span className="cg-eyebrow">Preview</span>
+
+                    <div style={{
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius)',
+                      padding: '12px 14px',
+                      display: 'grid',
+                      gridTemplateColumns: '3px 1fr auto',
+                      gap: 12,
+                      alignItems: 'center',
+                    }}>
+                      <span style={{ width: 3, height: 26, borderRadius: 2, background: 'var(--paused)' }} />
+                      <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: 13.5,
+                          fontWeight: 500,
+                          color: newMonitor.name ? 'var(--fg)' : 'var(--muted)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {newMonitor.name || 'Monitor name'}
+                        </div>
+                        <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                          {newMonitor.schedule || 'Schedule'} · {newMonitor.graceMinutes || 15}m grace
+                        </div>
+                      </div>
+                      <span className="cg-badge is-paused" style={{ fontSize: 10.5 }}>
+                        Pending first ping
+                      </span>
+                    </div>
+
+                    <div>
+                      <div className="cg-eyebrow" style={{ marginBottom: 6 }}>Ping URL</div>
+                      <div style={{
+                        padding: '8px 12px',
+                        background: 'var(--bg)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 11.5,
+                        color: 'var(--muted)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {baseUrl || 'https://cronguard.app'}/api/ping/<span style={{ color: 'var(--accent)' }}>your-monitor-id</span>
+                      </div>
+                      <p className="cg-hint">Available after creation. Any GET or POST counts as a ping.</p>
+                    </div>
+
+                    <div style={{
+                      padding: '12px 14px',
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-sm)',
+                    }}>
+                      <div className="cg-eyebrow" style={{ marginBottom: 6 }}>We&apos;ll watch for</div>
+                      <div className="col gap-8">
+                        <div className="row gap-8" style={{ fontSize: 12 }}>
+                          <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
+                            <I name="check" size={11} />
+                          </span>
+                          <span style={{ color: 'var(--fg-2)' }}>
+                            A ping every <strong style={{ color: 'var(--fg)' }}>{newMonitor.schedule || '—'}</strong>
+                          </span>
+                        </div>
+                        <div className="row gap-8" style={{ fontSize: 12 }}>
+                          <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
+                            <I name="check" size={11} />
+                          </span>
+                          <span style={{ color: 'var(--fg-2)' }}>
+                            Alert after <strong style={{ color: 'var(--fg)' }}>{newMonitor.graceMinutes || 15} min</strong> of silence
+                          </span>
+                        </div>
+                        <div className="row gap-8" style={{ fontSize: 12 }}>
+                          <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
+                            <I name="check" size={11} />
+                          </span>
+                          <span style={{ color: 'var(--fg-2)' }}>
+                            Recovery notification when it pings again
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ padding: '12px 20px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, justifyContent: 'space-between', background: 'var(--surface)' }}>
+                  <button type="button" onClick={closeAndReset} className="cg-btn is-sm is-ghost">
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateMonitor}
+                    disabled={!newMonitor.name || !newMonitor.schedule}
+                    className="cg-btn is-sm is-primary"
+                    style={!newMonitor.name || !newMonitor.schedule ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                  >
+                    <I name="plus" size={12} /> Create monitor
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Edit Monitor Modal */}
       {editingMonitor && (
-        <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50 p-4">
-          <div
-            className="card w-full max-w-md p-6 animate-fade-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-semibold">Edit Monitor</h3>
+        <div className="cg-modal-back" onClick={() => setEditingMonitor(null)}>
+          <div className="cg-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="cg-card-h">
+              <div style={{ fontSize: 14, fontWeight: 600 }}>Edit monitor</div>
               <button
+                type="button"
                 onClick={() => setEditingMonitor(null)}
-                className="p-2 hover:bg-[var(--card-border)] rounded-lg transition-colors"
+                className="cg-btn is-sm is-ghost"
+                style={{ height: 24, padding: '0 6px' }}
+                aria-label="Close"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div>
-                <label className="block text-sm font-medium mb-2">Name</label>
+                <label className="cg-label">Name</label>
                 <input
                   type="text"
                   value={editingMonitor.name}
                   onChange={(e) => setEditingMonitor({ ...editingMonitor, name: e.target.value })}
-                  className="w-full px-4 py-2.5 bg-[var(--background)] border border-[var(--card-border)] rounded-lg"
+                  className="cg-input"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium mb-2">Schedule</label>
+                <label className="cg-label">Schedule</label>
                 <input
                   type="text"
                   value={editingMonitor.schedule}
                   onChange={(e) => setEditingMonitor({ ...editingMonitor, schedule: e.target.value })}
-                  className="w-full px-4 py-2.5 bg-[var(--background)] border border-[var(--card-border)] rounded-lg"
+                  className="cg-input"
                 />
-                <p className="text-xs text-[var(--muted)] mt-1.5">Use: Every X minutes, Every hour, Daily, Weekly</p>
+                <p className="cg-hint">Use: Every X minutes, Every hour, Daily, Weekly</p>
               </div>
               <div>
-                <label className="block text-sm font-medium mb-2">Grace Period</label>
-                <div className="relative">
+                <label className="cg-label">Grace period</label>
+                <div style={{ position: 'relative' }}>
                   <input
                     type="number"
                     value={editingMonitor.graceMinutes}
                     onChange={(e) => setEditingMonitor({ ...editingMonitor, graceMinutes: parseInt(e.target.value) || 15 })}
-                    className="w-full px-4 py-2.5 bg-[var(--background)] border border-[var(--card-border)] rounded-lg pr-16"
+                    className="cg-input"
+                    style={{ paddingRight: 48 }}
                   />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[var(--muted)] text-sm">min</span>
+                  <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', fontSize: 12 }}>min</span>
                 </div>
-                <p className="text-xs text-[var(--muted)] mt-1.5">How long to wait before alerting</p>
+                <p className="cg-hint">How long to wait before alerting</p>
               </div>
             </div>
 
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setEditingMonitor(null)}
-                className="flex-1 px-4 py-2.5 border border-[var(--card-border)] rounded-lg font-medium hover:bg-[var(--card-border)] transition-colors"
-              >
+            <div style={{ padding: '12px 20px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, justifyContent: 'flex-end', background: 'var(--surface)' }}>
+              <button type="button" onClick={() => setEditingMonitor(null)} className="cg-btn is-sm">
                 Cancel
               </button>
-              <button
-                onClick={handleUpdateMonitor}
-                className="flex-1 btn btn-primary"
-              >
-                Save Changes
+              <button type="button" onClick={handleUpdateMonitor} className="cg-btn is-sm is-primary">
+                Save changes
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Per-monitor integration drawer */}
+      <CodeDrawer
+        open={codeDrawerMonitor !== null}
+        onClose={() => setCodeDrawerMonitor(null)}
+        baseUrl={baseUrl}
+        monitorId={codeDrawerMonitor?.id ?? ''}
+        monitorName={codeDrawerMonitor?.name}
+      />
+
       {/* Toast Notifications */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <div style={{
+        position: 'fixed',
+        bottom: 20,
+        right: 20,
+        zIndex: 200,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}>
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`px-4 py-3 rounded-lg shadow-lg animate-fade-in flex items-center gap-2 ${
-              toast.type === 'success'
-                ? 'bg-emerald-500 text-white'
-                : 'bg-red-500 text-white'
-            }`}
+            className="cg-card"
+            style={{
+              padding: '10px 14px',
+              borderColor: toast.type === 'success'
+                ? 'color-mix(in oklab, var(--healthy) 30%, var(--border))'
+                : 'color-mix(in oklab, var(--down) 30%, var(--border))',
+              background: toast.type === 'success'
+                ? 'color-mix(in oklab, var(--healthy) 8%, var(--surface))'
+                : 'color-mix(in oklab, var(--down) 8%, var(--surface))',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              boxShadow: 'var(--shadow-md)',
+              minWidth: 240,
+            }}
           >
-            {toast.type === 'success' ? (
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            ) : (
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            )}
-            <span className="text-sm font-medium">{toast.message}</span>
+            <span style={{ color: toast.type === 'success' ? 'var(--healthy)' : 'var(--down)', display: 'inline-flex' }}>
+              <I name={toast.type === 'success' ? 'check' : 'alert'} size={14} />
+            </span>
+            <span style={{ fontSize: 13, color: 'var(--fg)', fontWeight: 500 }}>
+              {toast.message}
+            </span>
           </div>
         ))}
+      </div>
+    </>
+  )
+}
+
+function OnboardingStrip({ onCreateClick }: { onCreateClick: () => void }) {
+  const steps = [
+    {
+      label: 'Create monitor',
+      detail: 'Give your job a name and schedule',
+      state: 'active' as const,
+    },
+    {
+      label: 'Add curl to your job',
+      detail: 'Drop a single HTTP call at the end',
+      state: 'pending' as const,
+    },
+    {
+      label: 'Wait for first ping',
+      detail: "We'll watch — silence triggers an alert",
+      state: 'pending' as const,
+    },
+  ]
+
+  return (
+    <div
+      className="cg-card"
+      style={{
+        marginBottom: 16,
+        padding: '16px 18px',
+        background: 'linear-gradient(180deg, color-mix(in oklab, var(--accent) 6%, var(--surface)), var(--surface))',
+        borderColor: 'color-mix(in oklab, var(--accent) 22%, var(--border))',
+      }}
+    >
+      <div className="row spread" style={{ marginBottom: 12 }}>
+        <div className="col" style={{ gap: 2 }}>
+          <span className="cg-eyebrow" style={{ color: 'var(--accent)' }}>
+            Get started
+          </span>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>
+            Three steps to your first monitor
+          </div>
+        </div>
+        <button type="button" onClick={onCreateClick} className="cg-btn is-sm is-primary">
+          <I name="plus" size={13} /> Create monitor
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0, alignItems: 'stretch' }}>
+        {steps.map((step, idx) => {
+          const isActive = step.state === 'active'
+          return (
+            <div
+              key={step.label}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 12,
+                padding: '12px 14px',
+                borderRight: idx < steps.length - 1 ? '1px solid var(--border)' : undefined,
+              }}
+            >
+              <div
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  flexShrink: 0,
+                  background: isActive ? 'var(--accent)' : 'var(--surface-2)',
+                  color: isActive ? 'var(--accent-fg)' : 'var(--muted)',
+                  border: isActive ? '1px solid var(--accent)' : '1px solid var(--border)',
+                }}
+              >
+                {idx + 1}
+              </div>
+              <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: isActive ? 'var(--fg)' : 'var(--muted)',
+                }}>
+                  {step.label}
+                </div>
+                <div style={{
+                  fontSize: 11.5,
+                  color: isActive ? 'var(--fg-2)' : 'var(--muted)',
+                  opacity: isActive ? 1 : 0.7,
+                }}>
+                  {step.detail}
+                </div>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

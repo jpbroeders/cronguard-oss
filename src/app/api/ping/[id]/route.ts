@@ -23,7 +23,6 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
-  const startTime = Date.now()
 
   // Check rate limit
   const rateLimit = checkRateLimit(id)
@@ -43,9 +42,10 @@ export async function GET(
     return NextResponse.json({ error: 'Monitor not found' }, { status: 404 })
   }
 
-  const duration = Date.now() - startTime
+  // duration is omitted on GET — it's the user's reported job runtime,
+  // not server handler overhead. Only POST with an explicit body fills it.
   const ip = getClientIp(request)
-  const ping = recordPing(id, true, duration, undefined, ip)
+  const ping = recordPing(id, true, undefined, undefined, ip)
 
   return new NextResponse('OK', {
     status: 200,
